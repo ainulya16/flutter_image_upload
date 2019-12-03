@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http_parser/http_parser.dart';
 import 'package:multi_image_picker/multi_image_picker.dart';
 import 'package:flutter_uploader/flutter_uploader.dart';
-import 'package:todo_flutter/ui/image.dart';
+import 'package:http/http.dart' as http;
+import 'package:workmanager/workmanager.dart';
 
 void main() => runApp(MyApp());
 
@@ -32,15 +35,13 @@ class MyHomePage extends StatefulWidget {
   _MyHomePageState createState() => _MyHomePageState();
 }
 
+
 class _MyHomePageState extends State<MyHomePage> {
   String _error = '';
   List<Asset> _images = List();
+  List<Asset> _uploadedImages = List();
   List<FileItem> _files = List();
 
-  
-  final uploader = FlutterUploader();
-  StreamSubscription _progressSubscription;
-  StreamSubscription _resultSubscription;
   
   @override
   void initState() {
@@ -50,57 +51,66 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   void dispose() {
     super.dispose();
-    _progressSubscription?.cancel();
-    _resultSubscription?.cancel();
   }
 
+  void callbackDispatcher() {
+    Workmanager.executeTask((task, images) async {
+      switch (task) {
+        case 'upload':
+          print("upload file was executed");
+          _uploadImage();
+          break;
+        case Workmanager.iOSBackgroundTask:
+          print("The iOS background fetch was triggered");
+          break;
+      }
 
-  void _setListener() {
-    _progressSubscription = uploader.progress.listen((progress) {
-      // final task = _tasks[progress.tag];
-      print("progress: ${progress.progress} , tag: ${progress.tag}");
-      // this.setState((){
-        // _progress = progress.progress;
-        // _status = progress.status;
-      // });
-      
+      return Future.value(true);
     });
-    _resultSubscription =uploader.result.listen((result) {
-      print("id: ${result.taskId}, status: ${result.status}");
-      print("response: ${result.response}, statusCode: ${result.statusCode}");
-      print("tag: ${result.tag}, headers: ${result.headers}");
-      setState(() {
-        _images = _images.toList()..removeAt(0);
-        _files = _files.toList()..removeAt(0);
-      });
-    }, onError: (ex, stacktrace) {
-      print("stacktrace: $stacktrace" ?? "no stacktrace");
-    });
+  }
+
+  void initialize() {
+    Workmanager.initialize(callbackDispatcher,isInDebugMode: true,);
   }
 
 
   void _uploadImage() async {
+    if(_images.length==0) {
+      Workmanager.cancelAll();
+      return;
+    }
     try {
-      var filename = _files[0].filename;
-      String taskId = '';
-      Map<String,String> headers = {
-            "Content-Type": "application/octet-stream",
-            "Authorization": "Bearer 2XIY9sJs32QAAAAAAAABVCH4XNvPghqnXaloy2OpxVYWBEmozbW7Sg5Qf5ixJKPe",
-            "Dropbox-API-Arg": "{\"path\": \"/example/$filename\",\"mode\": \"add\",\"autorename\": true,\"mute\": false,\"strict_conflict\": false}",
-          };
-        taskId = await uploader.enqueueBinary(
-          url: "https://content.dropboxapi.com/2/files/upload",
-          file: _files[0],
-          method: UploadMethod.POST,
-          headers: headers,
-          showNotification: false,
-          tag: 'upload $filename'
-        );
 
-      print('taskId $taskId');
+        final String url = "https://content.dropboxapi.com/2/files/upload";
+        final Asset asset = _images[0];    
+        final String filename = asset.name;
+        final Map<String,String> headers = {
+          "Content-Type": "application/octet-stream",
+          "Authorization": "Bearer 2XIY9sJs32QAAAAAAAABVCH4XNvPghqnXaloy2OpxVYWBEmozbW7Sg5Qf5ixJKPe",
+          "Dropbox-API-Arg": "{\"path\": \"/example/$filename\",\"mode\": \"add\",\"autorename\": true,\"mute\": false,\"strict_conflict\": false}",
+        };
+
+        Uri uri = Uri.parse(url);
+        ByteData byteData = await asset.getByteData();
+        List<int> imageData = byteData.buffer.asUint8List();
+
+        final response = await http.post(url, body: imageData, headers: headers);
+        print(response.body);
+        if(response.statusCode==200) {
+          this.setState((){
+            _images = _images.toList()..removeAt(0);
+            _uploadedImages = _uploadedImages.toList()..add(asset);
+          });
+          _uploadImage();
+        }
+
     } on PlatformException catch (e) {
       print(e);
     }
+  }
+
+  void startUploadFiles() {
+    Workmanager.registerOneOffTask("1",'upload');
   }
 
   void _getImages() async {
@@ -130,8 +140,6 @@ class _MyHomePageState extends State<MyHomePage> {
       crossAxisCount: 3,
       children: List.generate(_images.length, (index) {
         Asset asset = _images[index];
-        FileItem file = _files[index];
-        // return ViewImages(index, asset, false, file, key: UniqueKey());
         return AssetThumb(
           asset: asset,
           height: 300,
